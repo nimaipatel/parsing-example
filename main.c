@@ -57,7 +57,7 @@ typedef struct JsonValue
         struct JsonArray object;
         String8 string;
         // TODO: support floating point numbers...
-        U64 number;
+        F64 number;
         B8 boolean;
     };
 } JsonValue;
@@ -343,18 +343,61 @@ JsonParseResult Json_Parse_Null(ArenaAllocator *arena, String8 *string)
 
 JsonParseResult Json_Parse_Number(ArenaAllocator *arena, String8 *string)
 {
-    JsonParseResult result = {0};
-    result.value.type = JSON_NUMBER;
-    result.value.number = 0;
+    F64 sign = 1;
 
-    while (string->len > 0 && '0' <= string->data[0] && string->data[0] <= '9')
+    if (string->len > 0 && string->data[0] == '-')
     {
-        result.value.number *= 10;
-        result.value.number += string->data[0] - '0';
+        sign = -1;
         String8_Drop_First(string);
     }
 
-    return result;
+    else if (string->len > 0 && string->data[0] == '+')
+    {
+        String8_Drop_First(string);
+    }
+
+    F64 number = 0.0f;
+    F64 fraction = 0.0f;
+    F64 divisor = 1.0f;
+    B8 period_seen = FALSE;
+
+    while (string->len > 0)
+    {
+        if ('0' <= string->data[0] && string->data[0] <= '9')
+        {
+            if (period_seen)
+            {
+                fraction = fraction * 10 + (string->data[0] - '0');
+                divisor *= 10;
+            }
+
+            else
+            {
+                number = number * 10 + (string->data[0] - '0');
+            }
+        }
+
+        else if (string->data[0] == '.' && !period_seen)
+        {
+            period_seen = TRUE;
+        }
+
+        else
+        {
+            break;
+        }
+
+        String8_Drop_First(string);
+    }
+
+    number += fraction / divisor;
+    number *= sign;
+
+    return (JsonParseResult){
+        .value = (JsonValue){
+            .type = JSON_NUMBER,
+            .number = number,
+        }};
 }
 
 void Json_Array_Append(ArenaAllocator *arena, JsonArray *array, JsonValue value)
@@ -538,6 +581,7 @@ JsonParseResult Json_Parse(ArenaAllocator *arena, String8 *string)
     case '8':
     case '9':
     case '-':
+    case '+':
         result = Json_Parse_Number(arena, string);
         break;
 
@@ -597,11 +641,11 @@ int main(void)
             break;
 
         case JSON_NUMBER:
-            printf("%ld, ", value.number);
+            printf("%f, ", value.number);
             break;
 
         case JSON_STRING:
-            printf("%*s, ", (int)value.string.len, value.string.data);
+            printf("%.*s, ", (int)value.string.len, value.string.data);
             break;
 
         case JSON_ARRAY:
