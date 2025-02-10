@@ -72,10 +72,9 @@ typedef struct JsonArrayBlock
 typedef struct JsonParseResult
 {
     JsonValue value;
-    String8 string;
 } JsonParseResult;
 
-JsonParseResult Json_Parse(String8 string);
+JsonParseResult Json_Parse(String8 *string);
 
 static const String8 NULL_STR = {
     .data = "null",
@@ -188,45 +187,41 @@ B8 String8_Compare(String8 a, String8 b)
     return TRUE;
 }
 
-String8 String8_Drop_First_N(U64 N, String8 string)
+void String8_Drop_First_N(U64 N, String8 *string)
 {
-    assert(N <= string.len);
+    assert(N <= string->len);
 
-    string.data += N;
-    string.len -= N;
-
-    return string;
+    string->data += N;
+    string->len -= N;
 }
 
-String8 String8_Drop_First(String8 string)
+void String8_Drop_First(String8 *string)
 {
-    return String8_Drop_First_N(1, string);
+    String8_Drop_First_N(1, string);
 }
 
-String8 String8_Trim_Whitespace_Left(String8 string)
+void String8_Trim_Whitespace_Left(String8 *string)
 {
-    while (string.len > 0 && string.data[0] == ' ')
+    while (string->len > 0 && string->data[0] == ' ')
     {
-        string = String8_Drop_First(string);
+        String8_Drop_First(string);
     }
-
-    return string;
 }
 
-JsonParseResult Json_Parse_Bool(String8 string)
+JsonParseResult Json_Parse_Bool(String8 *string)
 {
     B8 value = JSON_BOOL;
 
-    if (String8_Is_Prefix(TRUE_STRING8, string))
+    if (String8_Is_Prefix(TRUE_STRING8, *string))
     {
         value = TRUE;
-        string = String8_Drop_First_N(TRUE_STRING8.len, string);
+        String8_Drop_First_N(TRUE_STRING8.len, string);
     }
 
-    else if (String8_Is_Prefix(FALSE_STRING8, string))
+    else if (String8_Is_Prefix(FALSE_STRING8, *string))
     {
         value = FALSE;
-        string = String8_Drop_First_N(FALSE_STRING8.len, string);
+        String8_Drop_First_N(FALSE_STRING8.len, string);
     }
 
     else
@@ -239,15 +234,14 @@ JsonParseResult Json_Parse_Bool(String8 string)
             .type = JSON_BOOL,
             .boolean = value,
         },
-        .string = string,
     };
 }
 
-JsonParseResult Json_Parse_Null(String8 string)
+JsonParseResult Json_Parse_Null(String8 *string)
 {
-    if (String8_Is_Prefix(NULL_STR, string))
+    if (String8_Is_Prefix(NULL_STR, *string))
     {
-        string = String8_Drop_First_N(NULL_STR.len, string);
+        String8_Drop_First_N(NULL_STR.len, string);
     }
 
     else
@@ -259,25 +253,22 @@ JsonParseResult Json_Parse_Null(String8 string)
         .value = (JsonValue){
             .type = JSON_NULL,
         },
-        .string = string,
     };
 }
 
-JsonParseResult Json_Parse_Number(String8 string)
+JsonParseResult Json_Parse_Number(String8 *string)
 {
     JsonParseResult result = {0};
     result.value.type = JSON_NUMBER;
     result.value.number = 0;
 
-    while (string.len > 0 && '0' <= string.data[0] && string.data[0] <= '9')
+    while (string->len > 0 && '0' <= string->data[0] && string->data[0] <= '9')
     {
         result.value.number *= 10;
-        result.value.number += string.data[0] - '0';
-
-        string = String8_Drop_First(string);
+        result.value.number += string->data[0] - '0';
+        String8_Drop_First(string);
     }
 
-    result.string = string;
     return result;
 }
 
@@ -304,33 +295,31 @@ void Json_Array_Append(JsonArray *array, JsonValue value)
     array->len += 1;
 }
 
-JsonParseResult Json_Parse_Array(String8 string)
+JsonParseResult Json_Parse_Array(String8 *string)
 {
     // consume the [
-    string = String8_Drop_First(string);
-    string = String8_Trim_Whitespace_Left(string);
+    String8_Drop_First(string);
+    String8_Trim_Whitespace_Left(string);
 
     JsonArray array = {0};
 
-    while (string.len > 0)
+    while (string->len > 0)
     {
         JsonParseResult result = Json_Parse(string);
         Json_Array_Append(&array, result.value);
 
-        string = result.string;
+        String8_Trim_Whitespace_Left(string);
 
-        string = String8_Trim_Whitespace_Left(string);
+        assert(string->len > 0);
 
-        assert(string.len > 0);
-
-        if (string.data[0] == ',')
+        if (string->data[0] == ',')
         {
-            string = String8_Drop_First(string);
+            String8_Drop_First(string);
         }
 
-        else if (string.data[0] == ']')
+        else if (string->data[0] == ']')
         {
-            string = String8_Drop_First(string);
+            String8_Drop_First(string);
             break;
         }
 
@@ -339,7 +328,7 @@ JsonParseResult Json_Parse_Array(String8 string)
             assert(FALSE && "TODO: handle invalid character...");
         }
 
-        string = String8_Trim_Whitespace_Left(string);
+        String8_Trim_Whitespace_Left(string);
     }
 
     return (JsonParseResult){
@@ -347,78 +336,74 @@ JsonParseResult Json_Parse_Array(String8 string)
             .type = JSON_ARRAY,
             .array = array,
         },
-        .string = string,
     };
 }
 
-JsonParseResult Json_Parse_String(String8 string)
+JsonParseResult Json_Parse_String(String8 *string)
 {
-    string = String8_Drop_First(string);
+    String8_Drop_First(string);
 
     U64 len = 0;
-    while (len < string.len && string.data[len] != '"')
+    while (len < string->len && string->data[len] != '"')
     {
         len += 1;
     }
 
     char *data = malloc(len * sizeof(char));
-    memcpy(data, string.data, len);
+    memcpy(data, string->data, len);
 
     String8 parsed_string = (String8){
         .data = data,
         .len = len,
     };
 
-    string = String8_Drop_First_N(len + 1, string);
+    String8_Drop_First_N(len + 1, string);
 
     return (JsonParseResult){
         .value = (JsonValue){
             .type = JSON_STRING,
             .string = parsed_string,
         },
-        .string = string,
     };
 }
 
-JsonParseResult Json_Parse_Object(String8 string)
+JsonParseResult Json_Parse_Object(String8 *string)
 {
     // consume the {
-    string = String8_Drop_First(string);
+    String8_Drop_First(string);
 
     JsonArray object = {0};
 
-    while (string.len > 0)
+    while (string->len > 0)
     {
-        string = String8_Trim_Whitespace_Left(string);
+        String8_Trim_Whitespace_Left(string);
 
         JsonParseResult pair_key = Json_Parse(string);
-        string = pair_key.string;
         assert(pair_key.value.type == JSON_STRING);
         Json_Array_Append(&object, pair_key.value);
 
-        string = String8_Trim_Whitespace_Left(string);
+        String8_Trim_Whitespace_Left(string);
 
-        assert(string.len > 0 && string.data[0] == ':');
-        string = String8_Drop_First(string);
+        assert(string->len > 0 && string->data[0] == ':');
+        String8_Drop_First(string);
 
-        string = String8_Trim_Whitespace_Left(string);
+        String8_Trim_Whitespace_Left(string);
 
         JsonParseResult pair_value = Json_Parse(string);
-        string = pair_value.string;
         Json_Array_Append(&object, pair_value.value);
 
-        string = String8_Trim_Whitespace_Left(string);
+        String8_Trim_Whitespace_Left(string);
 
-        assert(string.len > 0);
+        assert(string->len > 0);
 
-        if (string.data[0] == ',')
+        if (string->data[0] == ',')
         {
-            string = String8_Drop_First(string);
+            String8_Drop_First(string);
         }
 
-        else if (string.data[0] == '}')
+        else if (string->data[0] == '}')
         {
-            string = String8_Drop_First(string);
+            String8_Drop_First(string);
             break;
         }
 
@@ -427,7 +412,7 @@ JsonParseResult Json_Parse_Object(String8 string)
             assert(FALSE && "TODO: handle invalid character...");
         }
 
-        string = String8_Trim_Whitespace_Left(string);
+        String8_Trim_Whitespace_Left(string);
     }
 
     return (JsonParseResult){
@@ -435,19 +420,18 @@ JsonParseResult Json_Parse_Object(String8 string)
             .type = JSON_OBJECT,
             .object = object,
         },
-        .string = string,
     };
 }
 
-JsonParseResult Json_Parse(String8 string)
+JsonParseResult Json_Parse(String8 *string)
 {
-    string = String8_Trim_Whitespace_Left(string);
+    String8_Trim_Whitespace_Left(string);
 
     JsonParseResult result;
 
-    assert(string.len > 0 && "TODO: trying to parse empty string...");
+    assert(string->len > 0 && "TODO: trying to parse empty string...");
 
-    switch (string.data[0])
+    switch (string->data[0])
     {
     case 't':
     case 'f':
@@ -495,7 +479,7 @@ JsonParseResult Json_Parse(String8 string)
 int main(void)
 {
     String8 input = Read_File_To_String("input.json");
-    JsonParseResult result = Json_Parse(input);
+    JsonParseResult result = Json_Parse(&input);
 
     JsonArray array = result.value.array;
     JsonArrayBlock *curr = array.head;
