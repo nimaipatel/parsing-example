@@ -74,9 +74,18 @@ typedef struct JsonParseResult
     JsonValue value;
 } JsonParseResult;
 
-JsonParseResult Json_Parse(String8 *string);
+typedef struct
+{
+    void *base_ptr;
+    size_t reserved_size;
+    size_t commit_size;
+    size_t committed_size;
+    size_t offset;
+} ArenaAllocator;
 
-static const String8 NULL_STR = {
+JsonParseResult Json_Parse(ArenaAllocator *arena, String8 *string);
+
+static const String8 NULL_STRING8 = {
     .data = "null",
     .len = sizeof("null") - 1,
 };
@@ -93,6 +102,90 @@ static const String8 FALSE_STRING8 = {
 
 #define TRUE 1
 #define FALSE 0
+
+void arena_create(size_t reserve_size, size_t commit_size, ArenaAllocator *arena)
+{
+    assert(commit_size <= reserve_size && "Commit size must be <= reserve size");
+
+    arena->base_ptr = mmap(NULL, reserve_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (arena->base_ptr == NULL)
+    {
+        assert(FALSE && "TODO: handle mmap failed...");
+        return;
+    }
+
+    arena->reserved_size = reserve_size;
+    arena->commit_size = commit_size;
+    arena->committed_size = 0;
+    arena->offset = 0;
+}
+
+int commit_memory(ArenaAllocator *arena, size_t size)
+{
+    size_t new_commit_size = ((arena->offset + size + arena->commit_size - 1) / arena->commit_size) * arena->commit_size;
+
+    if (new_commit_size > arena->reserved_size)
+    {
+        return 0;
+    }
+
+    if (new_commit_size > arena->committed_size)
+    {
+        size_t commit_increment = new_commit_size - arena->committed_size;
+
+        if (mprotect((char *)arena->base_ptr + arena->committed_size, commit_increment, PROT_READ | PROT_WRITE) != 0)
+        {
+            long page_size = sysconf(_SC_PAGESIZE);
+            if ((uintptr_t)((char *)arena->base_ptr + arena->committed_size) % page_size != 0)
+            {
+                printf("Error: Address is not page-aligned\n");
+                exit(1);
+            }
+
+            return 0;
+        }
+
+        arena->committed_size = new_commit_size;
+    }
+
+    return 1;
+}
+
+// Function to allocate memory from the arena
+void *arena_alloc(ArenaAllocator *arena, size_t size)
+{
+    if (arena->offset + size > arena->reserved_size)
+    {
+        return NULL;
+    }
+
+    if (!commit_memory(arena, size))
+    {
+        return NULL;
+    }
+
+    void *ptr = (char *)arena->base_ptr + arena->offset;
+    arena->offset += size;
+    return ptr;
+}
+
+// Function to reset the arena (without freeing reserved memory)
+void arena_reset(ArenaAllocator *arena)
+{
+    arena->offset = 0;
+}
+
+// Function to free the entire arena
+void arena_destroy(ArenaAllocator *arena)
+{
+    if (!arena)
+        return;
+
+    munmap(arena->base_ptr, arena->reserved_size);
+
+    free(arena);
+}
 
 String8 Read_File_To_String(const I8 *filename)
 {
@@ -208,7 +301,7 @@ void String8_Trim_Whitespace_Left(String8 *string)
     }
 }
 
-JsonParseResult Json_Parse_Bool(String8 *string)
+JsonParseResult Json_Parse_Bool(ArenaAllocator *arena, String8 *string)
 {
     B8 value = JSON_BOOL;
 
@@ -237,11 +330,11 @@ JsonParseResult Json_Parse_Bool(String8 *string)
     };
 }
 
-JsonParseResult Json_Parse_Null(String8 *string)
+JsonParseResult Json_Parse_Null(ArenaAllocator *arena, String8 *string)
 {
-    if (String8_Is_Prefix(NULL_STR, *string))
+    if (String8_Is_Prefix(NULL_STRING8, *string))
     {
-        String8_Drop_First_N(NULL_STR.len, string);
+        String8_Drop_First_N(NULL_STRING8.len, string);
     }
 
     else
@@ -256,7 +349,7 @@ JsonParseResult Json_Parse_Null(String8 *string)
     };
 }
 
-JsonParseResult Json_Parse_Number(String8 *string)
+JsonParseResult Json_Parse_Number(ArenaAllocator *arena, String8 *string)
 {
     JsonParseResult result = {0};
     result.value.type = JSON_NUMBER;
@@ -272,12 +365,12 @@ JsonParseResult Json_Parse_Number(String8 *string)
     return result;
 }
 
-void Json_Array_Append(JsonArray *array, JsonValue value)
+void Json_Array_Append(ArenaAllocator *arena, JsonArray *array, JsonValue value)
 {
     // init...
     if (array->len == 0)
     {
-        array->head = malloc(sizeof(JsonArrayBlock));
+        array->head = arena_alloc(arena, sizeof(JsonArrayBlock));
         array->head->next = NULL;
         array->last = array->head;
     }
@@ -285,7 +378,7 @@ void Json_Array_Append(JsonArray *array, JsonValue value)
     // if size is multiple of block size, add new block...
     else if (array->len % JSON_ARRAY_BLOCK_SIZE == 0)
     {
-        JsonArrayBlock *new_block = malloc(sizeof(JsonArrayBlock));
+        JsonArrayBlock *new_block = arena_alloc(arena, sizeof(JsonArrayBlock));
         new_block->next = NULL;
         array->last->next = new_block;
         array->last = new_block;
@@ -295,7 +388,7 @@ void Json_Array_Append(JsonArray *array, JsonValue value)
     array->len += 1;
 }
 
-JsonParseResult Json_Parse_Array(String8 *string)
+JsonParseResult Json_Parse_Array(ArenaAllocator *arena, String8 *string)
 {
     // consume the [
     String8_Drop_First(string);
@@ -305,8 +398,8 @@ JsonParseResult Json_Parse_Array(String8 *string)
 
     while (string->len > 0)
     {
-        JsonParseResult result = Json_Parse(string);
-        Json_Array_Append(&array, result.value);
+        JsonParseResult result = Json_Parse(arena, string);
+        Json_Array_Append(arena, &array, result.value);
 
         String8_Trim_Whitespace_Left(string);
 
@@ -339,7 +432,7 @@ JsonParseResult Json_Parse_Array(String8 *string)
     };
 }
 
-JsonParseResult Json_Parse_String(String8 *string)
+JsonParseResult Json_Parse_String(ArenaAllocator *arena, String8 *string)
 {
     String8_Drop_First(string);
 
@@ -349,7 +442,7 @@ JsonParseResult Json_Parse_String(String8 *string)
         len += 1;
     }
 
-    char *data = malloc(len * sizeof(char));
+    char *data = arena_alloc(arena, len * sizeof(char));
     memcpy(data, string->data, len);
 
     String8 parsed_string = (String8){
@@ -367,7 +460,7 @@ JsonParseResult Json_Parse_String(String8 *string)
     };
 }
 
-JsonParseResult Json_Parse_Object(String8 *string)
+JsonParseResult Json_Parse_Object(ArenaAllocator *arena, String8 *string)
 {
     // consume the {
     String8_Drop_First(string);
@@ -378,9 +471,9 @@ JsonParseResult Json_Parse_Object(String8 *string)
     {
         String8_Trim_Whitespace_Left(string);
 
-        JsonParseResult pair_key = Json_Parse(string);
+        JsonParseResult pair_key = Json_Parse(arena, string);
         assert(pair_key.value.type == JSON_STRING);
-        Json_Array_Append(&object, pair_key.value);
+        Json_Array_Append(arena, &object, pair_key.value);
 
         String8_Trim_Whitespace_Left(string);
 
@@ -389,8 +482,8 @@ JsonParseResult Json_Parse_Object(String8 *string)
 
         String8_Trim_Whitespace_Left(string);
 
-        JsonParseResult pair_value = Json_Parse(string);
-        Json_Array_Append(&object, pair_value.value);
+        JsonParseResult pair_value = Json_Parse(arena, string);
+        Json_Array_Append(arena, &object, pair_value.value);
 
         String8_Trim_Whitespace_Left(string);
 
@@ -423,7 +516,7 @@ JsonParseResult Json_Parse_Object(String8 *string)
     };
 }
 
-JsonParseResult Json_Parse(String8 *string)
+JsonParseResult Json_Parse(ArenaAllocator *arena, String8 *string)
 {
     String8_Trim_Whitespace_Left(string);
 
@@ -435,11 +528,11 @@ JsonParseResult Json_Parse(String8 *string)
     {
     case 't':
     case 'f':
-        result = Json_Parse_Bool(string);
+        result = Json_Parse_Bool(arena, string);
         break;
 
     case 'n':
-        result = Json_Parse_Null(string);
+        result = Json_Parse_Null(arena, string);
         break;
 
     case '0':
@@ -453,19 +546,19 @@ JsonParseResult Json_Parse(String8 *string)
     case '8':
     case '9':
     case '-':
-        result = Json_Parse_Number(string);
+        result = Json_Parse_Number(arena, string);
         break;
 
     case '"':
-        result = Json_Parse_String(string);
+        result = Json_Parse_String(arena, string);
         break;
 
     case '[':
-        result = Json_Parse_Array(string);
+        result = Json_Parse_Array(arena, string);
         break;
 
     case '{':
-        result = Json_Parse_Object(string);
+        result = Json_Parse_Object(arena, string);
         break;
 
     default:
@@ -479,7 +572,10 @@ JsonParseResult Json_Parse(String8 *string)
 int main(void)
 {
     String8 input = Read_File_To_String("input.json");
-    JsonParseResult result = Json_Parse(&input);
+    ArenaAllocator arena = {0};
+    // NOTE: commit size to be multiple of page size...
+    arena_create(1024 * 1024, 16384, &arena);
+    JsonParseResult result = Json_Parse(&arena, &input);
 
     JsonArray array = result.value.array;
     JsonArrayBlock *curr = array.head;
@@ -515,8 +611,15 @@ int main(void)
             break;
 
         case JSON_ARRAY:
+            printf("[nested array], ");
+            break;
+
         case JSON_OBJECT:
+            printf("[nested object], ");
+            break;
+
         default:
+            printf("[unknown tag], ");
             break;
         }
 
