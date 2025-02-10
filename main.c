@@ -77,10 +77,10 @@ typedef struct JsonParseResult
 typedef struct
 {
     void *base_ptr;
-    size_t reserved_size;
-    size_t commit_size;
-    size_t committed_size;
-    size_t offset;
+    U64 reserved_size;
+    U64 commit_size;
+    U64 committed_size;
+    U64 offset;
 } ArenaAllocator;
 
 JsonParseResult Json_Parse(ArenaAllocator *arena, String8 *string);
@@ -103,7 +103,7 @@ static const String8 FALSE_STRING8 = {
 #define TRUE 1
 #define FALSE 0
 
-void arena_create(size_t reserve_size, size_t commit_size, ArenaAllocator *arena)
+void Arena_Init(U64 reserve_size, U64 commit_size, ArenaAllocator *arena)
 {
     assert(commit_size <= reserve_size && "Commit size must be <= reserve size");
 
@@ -121,9 +121,9 @@ void arena_create(size_t reserve_size, size_t commit_size, ArenaAllocator *arena
     arena->offset = 0;
 }
 
-int commit_memory(ArenaAllocator *arena, size_t size)
+int Arena_Commit(ArenaAllocator *arena, U64 size)
 {
-    size_t new_commit_size = ((arena->offset + size + arena->commit_size - 1) / arena->commit_size) * arena->commit_size;
+    U64 new_commit_size = ((arena->offset + size + arena->commit_size - 1) / arena->commit_size) * arena->commit_size;
 
     if (new_commit_size > arena->reserved_size)
     {
@@ -132,7 +132,7 @@ int commit_memory(ArenaAllocator *arena, size_t size)
 
     if (new_commit_size > arena->committed_size)
     {
-        size_t commit_increment = new_commit_size - arena->committed_size;
+        U64 commit_increment = new_commit_size - arena->committed_size;
 
         if (mprotect((char *)arena->base_ptr + arena->committed_size, commit_increment, PROT_READ | PROT_WRITE) != 0)
         {
@@ -152,15 +152,14 @@ int commit_memory(ArenaAllocator *arena, size_t size)
     return 1;
 }
 
-// Function to allocate memory from the arena
-void *arena_alloc(ArenaAllocator *arena, size_t size)
+void *Arena_Alloc(ArenaAllocator *arena, U64 size)
 {
     if (arena->offset + size > arena->reserved_size)
     {
         return NULL;
     }
 
-    if (!commit_memory(arena, size))
+    if (!Arena_Commit(arena, size))
     {
         return NULL;
     }
@@ -170,24 +169,17 @@ void *arena_alloc(ArenaAllocator *arena, size_t size)
     return ptr;
 }
 
-// Function to reset the arena (without freeing reserved memory)
-void arena_reset(ArenaAllocator *arena)
+void Arena_Clear(ArenaAllocator *arena)
 {
     arena->offset = 0;
 }
 
-// Function to free the entire arena
-void arena_destroy(ArenaAllocator *arena)
+void Arena_Deinit(ArenaAllocator *arena)
 {
-    if (!arena)
-        return;
-
     munmap(arena->base_ptr, arena->reserved_size);
-
-    free(arena);
 }
 
-String8 Read_File_To_String(const I8 *filename)
+String8 Read_File_To_String(ArenaAllocator *arena, const I8 *filename)
 {
     String8 result = {0};
 
@@ -370,7 +362,7 @@ void Json_Array_Append(ArenaAllocator *arena, JsonArray *array, JsonValue value)
     // init...
     if (array->len == 0)
     {
-        array->head = arena_alloc(arena, sizeof(JsonArrayBlock));
+        array->head = Arena_Alloc(arena, sizeof(JsonArrayBlock));
         array->head->next = NULL;
         array->last = array->head;
     }
@@ -378,7 +370,7 @@ void Json_Array_Append(ArenaAllocator *arena, JsonArray *array, JsonValue value)
     // if size is multiple of block size, add new block...
     else if (array->len % JSON_ARRAY_BLOCK_SIZE == 0)
     {
-        JsonArrayBlock *new_block = arena_alloc(arena, sizeof(JsonArrayBlock));
+        JsonArrayBlock *new_block = Arena_Alloc(arena, sizeof(JsonArrayBlock));
         new_block->next = NULL;
         array->last->next = new_block;
         array->last = new_block;
@@ -442,7 +434,7 @@ JsonParseResult Json_Parse_String(ArenaAllocator *arena, String8 *string)
         len += 1;
     }
 
-    char *data = arena_alloc(arena, len * sizeof(char));
+    char *data = Arena_Alloc(arena, len * sizeof(char));
     memcpy(data, string->data, len);
 
     String8 parsed_string = (String8){
@@ -571,10 +563,12 @@ JsonParseResult Json_Parse(ArenaAllocator *arena, String8 *string)
 
 int main(void)
 {
-    String8 input = Read_File_To_String("input.json");
     ArenaAllocator arena = {0};
     // NOTE: commit size to be multiple of page size...
-    arena_create(1024 * 1024, 16384, &arena);
+    Arena_Init(1024 * 1024, 0x4000, &arena);
+
+    // we can use a different arena here, to decouple life time of input string and output AST...
+    String8 input = Read_File_To_String(&arena, "input.json");
     JsonParseResult result = Json_Parse(&arena, &input);
 
     JsonArray array = result.value.array;
