@@ -1,0 +1,23 @@
+{
+    "files.associations": {
+        "__config": "c",
+        "__locale": "c",
+        "__verbose_abort": "c",
+        "chrono": "c",
+        "compare": "c",
+        "complex": "c",
+        "locale": "c",
+        "*.tcc": "c",
+        "charconv": "c",
+        "optional": "c",
+        "algorithm": "c",
+        "format": "c",
+        "limits": "c",
+        "memory_resource": "c",
+        "numeric": "c",
+        "ostream": "c",
+        "streambuf": "c",
+        "system_error": "c",
+        "tuple": "c"
+    }
+}
